@@ -353,6 +353,15 @@ const SHIFTED: &[(char, char)] = &[
     ('?', '/'),
 ];
 
+/// The character the key typing `c` types with Shift on the US layout
+/// (`8` a `*`, `a` an `A`): what `shift+8` types.
+pub fn shifted(c: char) -> char {
+    SHIFTED
+        .iter()
+        .find(|(_, base)| *base == c)
+        .map_or(c.to_ascii_uppercase(), |(shifted, _)| *shifted)
+}
+
 /// Named keys, by their names (lower case).
 const NAMED: &[(&str, Key)] = &[
     ("enter", Key::Enter),
