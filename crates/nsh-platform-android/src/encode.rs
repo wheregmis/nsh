@@ -634,7 +634,9 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                     | Command::Desktop(_)
                     // No host answers `nsh/host` here (`Environment::host`):
                     // the core rejects the calls first.
-                    | Command::HostCall { .. } => e.int(-1),
+                    | Command::HostCall { .. }
+                    // Trusted web view input is macOS's for now.
+                    | Command::SendInput(_) => e.int(-1),
                 }
             }
         }

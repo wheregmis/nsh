@@ -89,7 +89,7 @@ pub use crate::{
         PasteBehavior, PasteEvent, PastedFile, PayloadValue, PressEvent, Prop, ROOT_ID, ResizeMode,
         ReturnKeyType, ScreenAnimation, ScreenProp, ScrollProp, SnapAlignment, StatusBarConfig,
         StatusBarSetting, StatusBarStyle, SubmitBehavior, Tag, TouchEvent, TouchPhase, TouchPoint,
-        Viewability, WebSource,
+        Viewability, WebInput, WebKey, WebSource,
     },
     props::{
         Accessibility, AccessibilityActionDef, AccessibilityProp, AccessibilityRole,
