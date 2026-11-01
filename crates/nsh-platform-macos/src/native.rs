@@ -1379,17 +1379,19 @@ define_class!(
             };
             let filename = file_name(&suggested.to_string());
             let dir = root.join(&id);
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                log::warn!(target: "js", "web view download into {}: {e}", dir.display());
-                done.call((std::ptr::null(),));
-                return;
-            }
             let path = dir.join(&filename);
-            let destination = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
             // SAFETY: `download` is a live WKDownload this handler delegates.
             let object = unsafe { Retained::retain(download as *const AnyObject as *mut AnyObject) }
                 .expect("a download");
             let entry = Download { _download: object, id, url, filename, path };
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                log::warn!(target: "js", "web view download into {}: {e}", dir.display());
+                // WebKit then cancels it, which reaches no entry: the app hears of it here.
+                self.emit(EventKind::Download, || failed_event(&entry, e.to_string()));
+                done.call((std::ptr::null(),));
+                return;
+            }
+            let destination = NSURL::fileURLWithPath(&NSString::from_str(&entry.path.to_string_lossy()));
             self.emit(EventKind::Download, || download_event("started", &entry, None));
             self.ivars().active.borrow_mut().insert(download_key(download), entry);
             done.call((Retained::as_ptr(&destination),));
@@ -1414,13 +1416,7 @@ define_class!(
             }
             // SAFETY: `localizedDescription` of an NSError.
             let message: Retained<NSString> = unsafe { msg_send![error, localizedDescription] };
-            self.emit(EventKind::Download, || {
-                let mut event = download_event("failed", &entry, None);
-                if let EventPayload::Map(fields) = &mut event {
-                    fields.push(("message", PayloadValue::Str(message.to_string())));
-                }
-                event
-            });
+            self.emit(EventKind::Download, || failed_event(&entry, message.to_string()));
         }
 
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
@@ -1555,6 +1551,15 @@ fn file_name(suggested: &str) -> String {
     } else {
         name
     }
+}
+
+/// `onDownload`'s payload for a download that failed, with why.
+fn failed_event(entry: &Download, message: String) -> EventPayload {
+    let mut event = download_event("failed", entry, None);
+    if let EventPayload::Map(fields) = &mut event {
+        fields.push(("message", PayloadValue::Str(message)));
+    }
+    event
 }
 
 fn download_key(download: &AnyObject) -> usize {
