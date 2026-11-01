@@ -556,13 +556,23 @@ impl<M: TextEngine> Core<M> {
                     Some(cx) => {
                         let mut old = old;
                         (old.inset_padding, old.inset_margin) = inst.root_insets_applied;
+                        let old = super::components::with_test_id(old, &inst.root_test_id_applied);
                         let attrs = cx.over(attrs);
                         inst.root_insets_applied = (attrs.inset_padding, attrs.inset_margin);
+                        inst.root_test_id_applied = super::components::test_id_of(&attrs);
                         (attrs, old)
                     }
                     None => (attrs, old),
                 };
-                self.apply_attrs_over(id, &attrs, &old, app.as_ref());
+                if self.components.slot_hosts.get(&id) == Some(&host)
+                    || self.components.fill_holders.contains(&id)
+                {
+                    // An app's slot, or a node around a fill: what is not a
+                    // style goes to its target (`super::slots`).
+                    self.apply_slot_attrs(id, host, &attrs, &old, None);
+                } else if !self.apply_target_attrs(id, &attrs, &old) {
+                    self.apply_attrs_over(id, &attrs, &old, app.as_ref());
+                }
                 if let Some((style, classes, class)) = restyle {
                     let outer = cx.and_then(|cx| cx.user);
                     let classes =
@@ -724,11 +734,13 @@ impl<M: TextEngine> Core<M> {
     /// handlers, responders and bindings.
     fn forget_released(&self, host: NodeId, inst: &mut Instance) {
         // The app's slot nodes are JS's, not the view's: they keep what the
-        // view gave them while they are its slots.
+        // view gave them while they are its slots (and so do the app's
+        // elements in them that take the slots' props).
         let live = |id: &NodeId| {
             *id == host
                 || self.components.owners.contains_key(id)
                 || self.components.slot_hosts.get(id) == Some(&host)
+                || self.adopted_host(*id) == Some(host)
         };
         inst.handlers.retain(|(id, _, _)| live(id));
         inst.event_handlers.retain(|(id, _)| live(id));

@@ -585,13 +585,17 @@ fn handle(
             }
             crate::chrome::client_mouse_moved(surface);
             let (x, y) = point(lparam);
-            crate::input::pointer(surface, mouse_event(PointerKind::Move, x, y, 0, 1, surface));
+            let held = held_buttons(wparam);
+            crate::input::pointer(
+                surface,
+                mouse_event(PointerKind::Move, x, y, 0, held, 1, surface),
+            );
         }
         WM_MOUSELEAVE => {
             data.tracking.set(false);
             crate::input::pointer(
                 surface,
-                mouse_event(PointerKind::Leave, -1.0, -1.0, 0, 0, surface),
+                mouse_event(PointerKind::Leave, -1.0, -1.0, 0, 0, 0, surface),
             );
         }
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN | WM_LBUTTONDBLCLK
@@ -614,9 +618,10 @@ fn handle(
                 // SAFETY: plain call.
                 let _ = unsafe { SetFocus(Some(hwnd)) };
             }
+            let held = held_buttons(wparam);
             crate::input::pointer(
                 surface,
-                mouse_event(PointerKind::Down, x, y, button, clicks, surface),
+                mouse_event(PointerKind::Down, x, y, button, held, clicks, surface),
             );
             return Some(LRESULT(0));
         }
@@ -631,9 +636,10 @@ fn handle(
                 let _ = unsafe { ReleaseCapture() };
             }
             let (x, y) = point(lparam);
+            let held = held_buttons(wparam);
             crate::input::pointer(
                 surface,
-                mouse_event(PointerKind::Up, x, y, button, 1, surface),
+                mouse_event(PointerKind::Up, x, y, button, held, 1, surface),
             );
             // X buttons must return TRUE.
             return Some(LRESULT(1));
@@ -642,7 +648,7 @@ fn handle(
             if data.buttons.replace(0) != 0 {
                 crate::input::pointer(
                     surface,
-                    mouse_event(PointerKind::Cancel, -1.0, -1.0, 0, 0, surface),
+                    mouse_event(PointerKind::Cancel, -1.0, -1.0, 0, 0, 0, surface),
                 );
             }
         }
@@ -705,6 +711,7 @@ fn handle(
                     x: p.x as f32 / scale,
                     y: p.y as f32 / scale,
                     button: 0,
+                    buttons: 0,
                     pointer: id + 2,
                     touch: info.pointerType.0 == 2,
                     pen: info.pointerType.0 == 3,
@@ -716,14 +723,7 @@ fn handle(
             return Some(LRESULT(0));
         }
         WM_SETCURSOR if lo(lparam.0) == HTCLIENT as i32 => {
-            let mut p = POINT::default();
-            // SAFETY: plain calls with local out values.
-            unsafe {
-                let _ = GetCursorPos(&mut p);
-                let _ = ScreenToClient(hwnd, &mut p);
-            }
-            let cursor = crate::input::cursor(surface, p.x as f32 / scale, p.y as f32 / scale);
-            set_cursor(cursor);
+            update_cursor(surface, hwnd);
             return Some(LRESULT(1));
         }
         WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
@@ -828,11 +828,22 @@ fn count_clicks(data: &WindowData, lparam: LPARAM) -> u32 {
     clicks
 }
 
+/// The mouse buttons a mouse message's `wparam` holds (`MK_LBUTTON`,
+/// `MK_RBUTTON`, `MK_MBUTTON`, `MK_XBUTTON1`, `MK_XBUTTON2`), bit `n` for
+/// button `n` as [`PointerEvent::button`] numbers them.
+fn held_buttons(wparam: WPARAM) -> u8 {
+    const BUTTON_KEYS: [usize; 5] = [0x1, 0x2, 0x10, 0x20, 0x40];
+    (0..5)
+        .filter(|&b| wparam.0 & BUTTON_KEYS[b] != 0)
+        .fold(0, |held, b| held | 1 << b)
+}
+
 fn mouse_event(
     kind: PointerKind,
     x: f32,
     y: f32,
     button: u8,
+    buttons: u8,
     clicks: u32,
     surface: &Surface,
 ) -> PointerEvent {
@@ -841,6 +852,7 @@ fn mouse_event(
         x,
         y,
         button,
+        buttons,
         pointer: 1,
         touch: false,
         pen: false,
@@ -878,6 +890,46 @@ pub(crate) fn lines_per_notch() -> f32 {
     l
 }
 
+/// Sets the cursor of what is under the mouse in the client area.
+fn update_cursor(surface: &Rc<Surface>, hwnd: HWND) {
+    let mut p = POINT::default();
+    // SAFETY: plain calls with local out values.
+    unsafe {
+        let _ = GetCursorPos(&mut p);
+        let _ = ScreenToClient(hwnd, &mut p);
+    }
+    let scale = surface.scale();
+    set_cursor(crate::input::cursor(
+        surface,
+        p.x as f32 / scale,
+        p.y as f32 / scale,
+    ));
+}
+
+/// A style batch does not trigger `WM_SETCURSOR`: apply its cursor at the
+/// resting mouse, keeping other windows and non-client cursors intact.
+pub(crate) fn refresh_cursor(surface: &Rc<Surface>) {
+    let hwnd = surface.hwnd();
+    let mut p = POINT::default();
+    // SAFETY: plain calls with a local value; the hit test is the window's
+    // own (a custom title bar's caption is not the client area).
+    let over = unsafe {
+        GetCursorPos(&mut p).is_ok()
+            && WindowFromPoint(p) == hwnd
+            && SendMessageW(
+                hwnd,
+                WM_NCHITTEST,
+                None,
+                Some(LPARAM(((p.y as u16 as isize) << 16) | p.x as u16 as isize)),
+            )
+            .0 as u32
+                == HTCLIENT
+    };
+    if over {
+        update_cursor(surface, hwnd);
+    }
+}
+
 /// Sets the cursor shown over the window.
 pub(crate) fn set_cursor(cursor: crate::input::Cursor) {
     use crate::input::Cursor;
@@ -901,6 +953,8 @@ pub(crate) fn set_cursor(cursor: crate::input::Cursor) {
         Cursor::NotAllowed => IDC_NO,
         Cursor::ResizeEw => IDC_SIZEWE,
         Cursor::ResizeNs => IDC_SIZENS,
+        Cursor::ResizeNwse => IDC_SIZENWSE,
+        Cursor::ResizeNesw => IDC_SIZENESW,
         Cursor::Wait => IDC_WAIT,
         Cursor::Progress => IDC_APPSTARTING,
         Cursor::Help => IDC_HELP,
@@ -1026,4 +1080,21 @@ pub(crate) fn keep<T: 'static>(value: T) {
         static KEPT: RefCell<Vec<Box<dyn std::any::Any>>> = RefCell::default();
     }
     KEPT.with(|k| k.borrow_mut().push(Box::new(value)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn held_buttons_number_the_buttons_as_presses_do() {
+        assert_eq!(held_buttons(WPARAM(0)), 0);
+        // MK_LBUTTON with MK_SHIFT and MK_CONTROL, which are no buttons.
+        assert_eq!(held_buttons(WPARAM(0x1 | 0x4 | 0x8)), 0b1);
+        // MK_RBUTTON, MK_MBUTTON, MK_XBUTTON1, MK_XBUTTON2.
+        assert_eq!(held_buttons(WPARAM(0x2)), 0b10);
+        assert_eq!(held_buttons(WPARAM(0x10)), 0b100);
+        assert_eq!(held_buttons(WPARAM(0x20)), 0b1000);
+        assert_eq!(held_buttons(WPARAM(0x40)), 0b1_0000);
+    }
 }

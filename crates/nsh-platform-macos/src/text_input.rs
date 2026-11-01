@@ -337,6 +337,13 @@ impl Ctx {
         }
     }
 
+    /// A text view's text scrolled, or its size or the viewport's changed.
+    fn scrolled(&self) {
+        if let Some((surface, view, input)) = self.get() {
+            report_scroll(&surface, &view, &input);
+        }
+    }
+
     fn key_press(&self, key: &str) {
         self.send(EventKind::KeyPress, || {
             EventPayload::Map(vec![("key", PayloadValue::Str(key.to_owned()))])
@@ -769,7 +776,7 @@ pub(crate) fn tab(surface: &Surface, from: &NSView, backward: bool) -> bool {
         // gives the focus back to it: skip the views around `from`.
         if next.isDescendantOf(&scope)
             && (!crate::view::is_ours(&next)
-                || NshView::from_ns(&next).is_some_and(|view| crate::input::is_key_control(&view)))
+                || NshView::from_ns(&next).is_some_and(|view| crate::input::is_key_stop(&view)))
             && !from.isDescendantOf(&next)
         {
             return window.makeFirstResponder(Some(&next));
@@ -1036,12 +1043,21 @@ pub(crate) fn test_paste(
     board.clearContents();
     let mut items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = Vec::new();
     let item = || NSPasteboardItem::new();
-    if !content.text.is_empty() {
+    // Text and its HTML are one item, as a browser copies them.
+    if !content.text.is_empty() || !content.html.is_empty() {
         let text = item();
-        // SAFETY: an immutable AppKit constant.
-        text.setString_forType(&NSString::from_str(&content.text), unsafe {
-            NSPasteboardTypeString
-        });
+        if !content.text.is_empty() {
+            // SAFETY: an immutable AppKit constant.
+            text.setString_forType(&NSString::from_str(&content.text), unsafe {
+                NSPasteboardTypeString
+            });
+        }
+        if !content.html.is_empty() {
+            text.setString_forType(
+                &NSString::from_str(&content.html),
+                &NSString::from_str("public.html"),
+            );
+        }
         items.push(ProtocolObject::from_retained(text));
     }
     for file in &content.files {
@@ -1319,6 +1335,14 @@ define_class!(
         #[unsafe(method(clipBoundsChanged:))]
         fn clip_bounds_changed(&self, _notification: &NSNotification) {
             self.ivars().caret_moved();
+            self.ivars().scrolled();
+        }
+
+        /// A text view or its clip view changed size: the content or the
+        /// viewport a built-in bar shows.
+        #[unsafe(method(textFrameChanged:))]
+        fn text_frame_changed(&self, _notification: &NSNotification) {
+            self.ivars().scrolled();
         }
     }
 
@@ -1436,7 +1460,7 @@ impl InputState {
             NSColor::clearColor()
         } else {
             config
-                .selection_color
+                .caret_color
                 .map_or_else(|| self.text_color(), ns_color)
         };
         view.setInsertionPointColor(Some(&caret));
@@ -1560,6 +1584,23 @@ fn new_editor(
                     Some(&clip),
                 );
         }
+        // A built-in bar also follows the text's height and the viewport's
+        // (`InputConfig::replaced`).
+        view.setPostsFrameChangedNotifications(true);
+        clip.setPostsFrameChangedNotifications(true);
+        for object in [&***view as &NSView, &*clip] {
+            // SAFETY: the delegate answers the selector (`textFrameChanged:`);
+            // a selector-based observer goes away with it.
+            unsafe {
+                objc2_foundation::NSNotificationCenter::defaultCenter()
+                    .addObserver_selector_name_object(
+                        delegate,
+                        sel!(textFrameChanged:),
+                        Some(objc2_app_kit::NSViewFrameDidChangeNotification),
+                        Some(object),
+                    );
+            }
+        }
         Editor::Area { scroller, view }
     } else {
         let field = if secure {
@@ -1645,7 +1686,13 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
                 editor.setAlignment(align);
             }
         }
-        Editor::Area { view: text, .. } => {
+        Editor::Area {
+            scroller,
+            view: text,
+        } => {
+            // A built-in bar of the app's takes the indicator's place; the
+            // text still scrolls with the wheel, the keys and the caret.
+            scroller.setHasVerticalScroller(config.scrollbar_visible);
             text.setFont(Some(&font));
             text.setTextColor(Some(&color));
             text.setAlignment(align);
@@ -1673,6 +1720,80 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         auto_focus(surface, &input);
     }
     place(view, &input);
+    report_scroll(surface, view, &input);
+}
+
+/// Reports how far a multiline input's text scrolled while a built-in bar
+/// takes the place of its indicator (`InputConfig::replaced`).
+fn report_scroll(surface: &Surface, view: &NshView, input: &InputState) {
+    if !input.config.borrow().replaced {
+        return;
+    }
+    let Editor::Area {
+        scroller,
+        view: text,
+    } = &*input.editor.borrow()
+    else {
+        return;
+    };
+    // SAFETY: a scroll view's clip view (an `NSView`), always present.
+    let clip: Retained<NSView> = unsafe { msg_send![&**scroller, contentView] };
+    // The clip view is flipped as the text view is: its bounds origin is
+    // the offset from the top.
+    let bounds = clip.bounds();
+    let width = bounds.size.width as f32;
+    let page = bounds.size.height as f32;
+    let height = (text.frame().size.height as f32).max(page);
+    let id = view.state().id;
+    surface.control(|c| {
+        c.input_scroll(
+            id,
+            Point {
+                x: Points(0.0),
+                y: px(bounds.origin.y as f32),
+            },
+            Size {
+                width: px(width),
+                height: px(height),
+            },
+            Size {
+                width: px(width),
+                height: px(page),
+            },
+        );
+    });
+}
+
+/// `Command::ScrollTo` for a multiline input: scrolls its text (a built-in
+/// bar's drags).
+pub(crate) fn scroll_to(view: &NshView, y: Points, animated: bool) {
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    let Editor::Area {
+        scroller,
+        view: text,
+    } = &*input.editor.borrow()
+    else {
+        return;
+    };
+    // SAFETY: a scroll view's clip view (an `NSView`), always present.
+    let clip: Retained<NSView> = unsafe { msg_send![&**scroller, contentView] };
+    let bounds = clip.bounds();
+    let max = (text.frame().size.height - bounds.size.height).max(0.0);
+    let origin = NSPoint::new(bounds.origin.x, (y.0 as CGFloat).clamp(0.0, max));
+    if animated {
+        // SAFETY: every view has an animator proxy, which answers the
+        // view's setters with an animation.
+        unsafe {
+            let animator: Retained<AnyObject> = msg_send![&clip, animator];
+            let _: () = msg_send![&animator, setBoundsOrigin: origin];
+        }
+    } else {
+        clip.setBoundsOrigin(origin);
+    }
+    // SAFETY: the scroll view's own clip view.
+    let _: () = unsafe { msg_send![&**scroller, reflectScrolledClipView: &*clip] };
 }
 
 /// The horizontal alignment of the text; natural follows the writing

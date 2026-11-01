@@ -104,6 +104,34 @@ pub enum AccessibilityRole {
     /// A group of a table's rows: its header, body or footer.
     #[prop(rename = "rowgroup")]
     RowGroup,
+    /// A list of options to choose from: a select's or combo box's popup.
+    Listbox,
+    /// An option of a listbox; `accessibilityState.selected` marks the chosen
+    /// one.
+    Option,
+    /// A group of related elements that is no landmark: an accordion, the
+    /// controls of a toolbar that belong together.
+    Group,
+    /// A section of the page a user may want to reach (a landmark): an
+    /// accordion's panel, labelled by its header.
+    Region,
+    /// A landmark of links or controls that move around the app: a
+    /// pagination, a breadcrumb.
+    Navigation,
+    /// A tree of items that expand and collapse (`treeitem`s).
+    Tree,
+    /// An item of a tree; `accessibilityState.expanded` tells whether its
+    /// children show, `accessibilityLevel` its depth (1 at the top).
+    #[prop(rename = "treeitem")]
+    TreeItem,
+    /// An item of a menu that is checked or not
+    /// (`accessibilityState.checked`).
+    #[prop(rename = "menuitemcheckbox")]
+    MenuItemCheckbox,
+    /// An item of a menu that is one choice of a group of them
+    /// (`accessibilityState.checked`).
+    #[prop(rename = "menuitemradio")]
+    MenuItemRadio,
 }
 
 /// Whether a checkable element is checked (`accessibilityState.checked`).
@@ -115,6 +143,24 @@ pub enum Checked {
     True,
     /// Partially checked.
     Mixed,
+}
+
+/// Which item of a set an element is the current one of
+/// (`accessibilityState.current`, ARIA's `aria-current`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibilityCurrent {
+    /// The current item of a set, of no particular kind (`true`).
+    True,
+    /// The current page: a pagination's, a breadcrumb's last link.
+    Page,
+    /// The current step of a process.
+    Step,
+    /// The current location: a place in a map or a flow chart.
+    Location,
+    /// The current date of a calendar.
+    Date,
+    /// The current time of a timetable.
+    Time,
 }
 
 /// Dynamic state of an element (`accessibilityState`).
@@ -130,6 +176,13 @@ pub struct AccessibilityState {
     pub busy: bool,
     /// Expanded or collapsed, for expandable elements.
     pub expanded: Option<bool>,
+    /// Pressed state of a toggle button (ARIA's `aria-pressed`): `Some`
+    /// makes a button one that stays on or off; `Mixed` is partly
+    /// pressed.
+    pub pressed: Option<Checked>,
+    /// The current item of a set (ARIA's `aria-current`): a pagination's
+    /// page, a wizard's step.
+    pub current: Option<AccessibilityCurrent>,
 }
 
 /// The value of a range or textual element (`accessibilityValue`).
@@ -191,6 +244,9 @@ pub struct Accessibility {
     pub live_region: LiveRegion,
     /// `accessibilityActions`.
     pub actions: Vec<AccessibilityActionDef>,
+    /// `accessibilityLevel`: the level of a heading (1 the top), the depth
+    /// of a tree item (1 at the top); `None` has none.
+    pub level: Option<u32>,
 }
 
 impl Accessibility {
@@ -238,6 +294,11 @@ pub enum AccessibilityProp {
     /// (`onAccessibilityAction` reports them).
     #[prop(js = "accessibilityActions")]
     Actions(Vec<AccessibilityActionDef>),
+    /// `accessibilityLevel`: the level of a heading (`role="header"`, 1
+    /// the top) or the depth of a tree item (`role="treeitem"`, 1 at the
+    /// top); others than whole numbers from 1 are none.
+    #[prop(js = "accessibilityLevel", with = crate::js::host_values::accessibility_level, reset = AccessibilityProp::Level(None), ts = "number")]
+    Level(Option<u32>),
 }
 
 /// Android's press ripple (`android={{ ripple }}`).
@@ -277,14 +338,37 @@ pub struct ViewProps {
     /// `windowDrag` (desktops): pressing the view drags the window; `None`
     /// leaves it to the views around it.
     pub window_drag: Option<bool>,
-    /// `focusable`: `Some(false)` keeps a view that takes presses out of
-    /// the keyboard focus's stops (Tab); `None` is the default, a stop.
+    /// `focusable`: whether the view is a stop of the keyboard focus (Tab):
+    /// `Some(true)` makes any view one, whether or not it takes presses (a
+    /// chart, a slider, a list that moves its selection with the arrow
+    /// keys); `Some(false)` keeps a view that takes presses out; `None`, the
+    /// default, leaves it to the presses ([`ViewProps::focus_stop`]).
     pub focusable: Option<bool>,
     /// The view is a selectable view (`View`'s `selectable`): the
     /// texts in its subtree that are not `selectable={false}` share one
     /// selection, from text to text ([`crate::selection`]); an area inside
     /// another is part of the outer one. Texts outside areas select alone.
     pub selectable_view: bool,
+}
+
+impl ViewProps {
+    /// Whether a view with these props is a stop of the keyboard focus
+    /// (Tab and Shift+Tab reach it; it hears `onFocus` / `onBlur` and takes
+    /// the `focus:` styles), given whether it `takes_presses` (listens for
+    /// `onPress`): `focusable` decides when it is set, else taking presses
+    /// does; a disabled view is never one.
+    ///
+    /// Focus and presses are separate: a stop that takes no presses is not
+    /// pressed by Return or Space (its keys reach it through the app's
+    /// keymap while it has the focus), and a view needs no press handler to
+    /// be focusable, which would take the presses of a pressable around it
+    /// (a chart in a card that opens a page). The platforms that move the
+    /// keyboard focus between views (macOS, the web, the headless driver)
+    /// all decide with this; inputs that edit are stops by their own rule,
+    /// and each platform adds what it knows of visibility.
+    pub fn focus_stop(&self, takes_presses: bool) -> bool {
+        self.focusable.unwrap_or(takes_presses) && !self.accessibility.state.disabled
+    }
 }
 
 /// When a pan on a view activates (`panActivation`; react-native-gesture-

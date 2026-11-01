@@ -389,6 +389,8 @@ pub struct ScreenConfig {
     pub large_title: bool,
     /// The content extends under the header.
     pub header_transparent: bool,
+    /// The system tab bar leaves while this page is on top.
+    pub hides_bottom_bar_when_pushed: bool,
     /// Color of the back button and bar buttons.
     pub tint_color: Option<Color>,
     /// Header background.
@@ -437,6 +439,7 @@ impl Default for ScreenConfig {
             header_visible: true,
             large_title: false,
             header_transparent: false,
+            hides_bottom_bar_when_pushed: false,
             tint_color: None,
             background_color: None,
             title_color: None,
@@ -548,8 +551,11 @@ pub struct InputConfig {
     pub paste_behavior: PasteBehavior,
     /// Focus once on screen.
     pub auto_focus: bool,
-    /// Caret and selection color.
+    /// Selection highlight color (on iOS also the caret's, unless
+    /// [`InputConfig::caret_color`] is set: UIKit tints both with one).
     pub selection_color: Option<Color>,
+    /// Caret color; the platform's default when `None`.
+    pub caret_color: Option<Color>,
     /// What the input holds, for autofill.
     pub auto_fill: crate::ops::AutoFill,
     /// The text runs right to left.
@@ -560,6 +566,13 @@ pub struct InputConfig {
     pub accessory_id: Option<Box<str>>,
     /// The input accessory it names, if one is mounted.
     pub accessory: Option<NodeId>,
+    /// A multiline input shows its scroll indicator (`scrollbar`; false
+    /// while a built-in bar takes its place).
+    pub scrollbar_visible: bool,
+    /// A built-in bar of the app's takes the indicator's place: the
+    /// platform reports how far the text scrolled
+    /// (`EngineControl::input_scroll`) and takes `Command::ScrollTo`.
+    pub replaced: bool,
 }
 
 impl InputConfig {
@@ -599,11 +612,14 @@ impl Default for InputConfig {
             paste_behavior: PasteBehavior::Insert,
             auto_focus: false,
             selection_color: None,
+            caret_color: None,
             auto_fill: crate::ops::AutoFill::Default,
             rtl: false,
             caret_hidden: false,
             accessory_id: None,
             accessory: None,
+            scrollbar_visible: true,
+            replaced: false,
         }
     }
 }
@@ -646,7 +662,7 @@ pub enum MountItem {
         /// View id.
         id: NodeId,
         /// The states.
-        states: u8,
+        states: u16,
     },
     /// Insert (or move) `child` into `parent`, below sibling `before` (or
     /// on top when `None`). Siblings rather than indices, so platform-owned
@@ -733,6 +749,10 @@ pub enum MountItem {
         horizontal: bool,
         /// Shows the scroll indicator.
         scrollbar_visible: bool,
+        /// A built-in bar of the app's takes the indicator's place (the
+        /// core's, over the viewport): the platform shows none on either
+        /// axis, also where a horizontal view keeps its own.
+        replaced: bool,
         /// Native animation value fed with the main-axis offset.
         scroll_value: Option<crate::animation::NodeId>,
         /// Native animation value fed with how far it is pulled past its
@@ -812,6 +832,37 @@ pub enum MountItem {
         /// The drawing.
         drawing: Arc<crate::canvas::Drawing>,
     },
+    /// What a shader view draws under its children (`None`: nothing); the
+    /// animated values among its uniforms come as
+    /// [`crate::animation::AnimationProp::CanvasArg`] bindings of its
+    /// [`crate::shader::ShaderLayer::slots`].
+    Shader {
+        /// The view.
+        id: NodeId,
+        /// The program and its uniforms.
+        layer: Option<Arc<crate::shader::ShaderLayer>>,
+    },
+    /// A shader transition starts: its `value` changed. It comes first in
+    /// its batch, so the platform takes the picture of what the view (the
+    /// surface, for a screen transition) shows before the batch's other
+    /// items, `sample_from`, and runs the layer's `nsh.progress` from 0 to
+    /// 1 over `duration`, what it draws from then on as `sample_to`; once
+    /// it ends the children show as they are.
+    ShaderTransition {
+        /// The transition.
+        id: NodeId,
+        /// How long it runs.
+        duration: std::time::Duration,
+    },
+    /// What a shader's pictures show changed, as far as the core knows: a
+    /// view in an effect's or a transition's subtree was in the batch, or
+    /// anything for a shader that reads what is behind it and for a screen
+    /// effect or transition. The platform takes them again; what changes
+    /// on its UI thread (animations, scrolling, loads) it notices itself.
+    ShaderInput {
+        /// The shader's view.
+        id: NodeId,
+    },
     /// Bind visual properties to native animation nodes.
     AnimationBindings {
         /// View.
@@ -843,7 +894,10 @@ pub enum MountItem {
         label: Option<Arc<str>>,
     },
     /// Animate the frame changes, insertions and removals that follow in
-    /// this batch.
+    /// this batch, until the next one replaces it: a batch may lead runs
+    /// of frames with different ones, an empty one for frames that do not
+    /// animate (`core/layout_scope.rs`). Platforms animate each frame with
+    /// the one before it.
     LayoutAnimation(LayoutAnimation),
     /// An animation graph change, in order with the other items.
     Animation(AnimationOp),
@@ -927,6 +981,36 @@ pub enum MountItem {
         /// The call.
         command: Command,
     },
+}
+
+impl MountItem {
+    /// The view the item changes (a parent for its children's insertions),
+    /// if it is about one: what [`MountItem::ShaderInput`] is derived from.
+    pub fn view(&self) -> Option<NodeId> {
+        use MountItem as M;
+        match self {
+            M::Create { id, .. }
+            | M::TrackStates { id, .. }
+            | M::Remove { id }
+            | M::Delete { id }
+            | M::Frame { id, .. }
+            | M::Overflow { id, .. }
+            | M::ViewStyle { id, .. }
+            | M::Text { id, .. }
+            | M::Image { id, .. }
+            | M::ScrollContent { id, .. }
+            | M::Canvas { id, .. }
+            | M::Shader { id, .. }
+            | M::ViewProps { id, .. }
+            | M::Input { id, .. }
+            | M::InputValue { id, .. }
+            | M::NativeProps { id, .. }
+            | M::Component { id, .. }
+            | M::ComponentProps { id, .. } => Some(*id),
+            M::Insert { parent, .. } => Some(*parent),
+            _ => None,
+        }
+    }
 }
 
 /// All mount items produced by one commit.

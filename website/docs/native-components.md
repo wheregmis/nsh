@@ -82,7 +82,7 @@ pub fn App() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, Text, type YNode, View } from "nsh";
+import { mount, type NativeComponentRef, signal, Text, View } from "nsh";
 import { nativeComponent } from "nsh";
 
 /** The host app's badge: a label it draws, sized to its text. */
@@ -95,7 +95,7 @@ const colors = ["#8250df", "#0969da", "#1a7f37", "#cf222e"];
 
 function App() {
   const taps = signal(0);
-  let badge: YNode | undefined;
+  let badge: NativeComponentRef | undefined;
   return (
     <View style={{ flex: 1, padding: 20, paddingTop: "calc(env(safe-area-inset-top) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)", gap: 16, backgroundColor: "#f6f8fa" }}>
       <Text style={{ fontSize: 22, fontWeight: "700" }}>Rendered by nsh</Text>
@@ -125,7 +125,7 @@ The TSX version is `examples/embedded/App.tsx`, which both embedding samples in 
 function nativeComponent<P extends object = {}, E extends object = {}>(
   name: string,
   spec: NativeComponentSpec<P, E>,
-): (props: NativeComponentProps<P, E>) => YNode;
+): (props: NativeComponentProps<P, E>) => JSX.Element;
 ```
 
 | Parameter | Type | Description |
@@ -238,7 +238,7 @@ map.command("zoomTo", json!({ "level": 3 }));
 ```
 
 ```tsx tabs
-let map: YNode | undefined;
+let map: NativeComponentRef | undefined;
 
 <MapView ref={(node) => (map = node)} latitude={52.52} longitude={13.405} style={{ flex: 1 }} />;
 
@@ -602,6 +602,33 @@ view, and its container gets the touches. A component that returns a child windo
 hidden with its view, receives its own input, and sits above everything NSH draws (NSH content over it is hidden, as
 with web views). `ComponentContext::emit`, `set_size` (points) and `redraw` work from any thread. Register before
 `AppView::load`; a registry belongs to one `AppView` (and the views made from the same `AppOptions`).
+
+A component also takes the mouse wheel and touchpad scrolls over it with `wheel` (an image viewer zooms with them). The
+`Wheel` it gets holds the pointer (`x`, `y`, the component's points), the distance in points (`dx`, `dy`, positive
+toward the right and down, as scroll views move their content) and in wheel notches (`notches_x`, `notches_y`, with
+fractions from precision touchpads and high-resolution wheels), whether it came in fine steps (`precise`) and the
+modifiers held (`shift`, `ctrl`, `alt`). It returns `true` for a scroll it took; the scroll views around it scroll with
+the rest, and by default with all of them. A scroll a scroll view has begun stays on that view. Ctrl + wheel is also a
+precision touchpad's pinch, and Shift + wheel arrives as the wheel sent it (`dy`, with `shift`):
+
+```rust
+use nsh_platform_windows::Wheel;
+
+impl NativeComponent for ImageView {
+    // draw, set_prop, ...
+
+    fn wheel(&mut self, event: &Wheel) -> bool {
+        if !event.ctrl {
+            return false; // the scroll views around it scroll
+        }
+        // √2 per notch, about the pointer.
+        let factor = 2f32.powf(-event.notches_y / 2.0);
+        self.zoom_about(event.x, event.y, factor);
+        self.context.redraw();
+        true
+    }
+}
+```
 
 ## Rules and limits
 

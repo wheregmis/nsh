@@ -55,6 +55,8 @@ unsafe extern "C" {
     fn js_request_pump();
     #[link_name = "report_error"]
     fn js_report_error(message: *const u8, len: usize);
+    #[link_name = "report_panic"]
+    fn js_report_panic(message: *const u8, len: usize);
     /// A message of a test session's app for the dev server (JSON
     /// `nsh_dev::protocol::ClientMessage`: its requests), sent over the
     /// page's socket.
@@ -99,10 +101,12 @@ unsafe extern "C" {
     fn js_websocket_close(id: u32, code: u32, reason: *const u8, len: usize) -> u32;
     #[link_name = "websocket_buffered"]
     fn js_websocket_buffered(id: u32) -> f64;
+    #[link_name = "websocket_pause"]
+    fn js_websocket_pause(id: u32, paused: u32);
     #[link_name = "websocket_cancel"]
     fn js_websocket_cancel(id: u32);
-    #[link_name = "load_chunk"]
-    fn js_load_chunk(id: *const u8, id_len: usize);
+    #[link_name = "load_data"]
+    fn js_load_data(name: *const u8, name_len: usize);
     #[link_name = "storage_load"]
     fn js_storage_load(prefix: *const u8, prefix_len: usize) -> u32;
     #[link_name = "storage_set"]
@@ -256,6 +260,13 @@ pub(crate) fn report_error(message: &str) {
     unsafe { js_report_error(message.as_ptr(), message.len()) }
 }
 
+/// Shows a panic: the engine traps right after, its state left borrowed,
+/// so the page stops calling it and keeps this report on screen.
+pub(crate) fn report_panic(message: &str) {
+    // SAFETY: the slice is valid for the call; JS copies it.
+    unsafe { js_report_panic(message.as_ptr(), message.len()) }
+}
+
 /// Logs to the browser's console.
 pub(crate) fn log(level: log::Level, message: &str) {
     // SAFETY: the slice is valid for the call; JS copies it.
@@ -335,11 +346,11 @@ pub(crate) fn fetch_cancel(id: u32) {
     unsafe { js_fetch_cancel(id) }
 }
 
-/// Asks the page for chunk `id` of a split bundle; it hands it over later
-/// with `nsh_chunk`.
-pub(crate) fn load_chunk(id: &str) {
+/// Asks the page for the runtime's data `name` (`nsh_core::runtime_data`):
+/// it fetches `nsh-<name>.bin` and hands it over with `nsh_data`.
+pub(crate) fn load_data(name: &str) {
     // SAFETY: the slice is valid for the call; JS copies it.
-    unsafe { js_load_chunk(id.as_ptr(), id.len()) }
+    unsafe { js_load_data(name.as_ptr(), name.len()) }
 }
 
 /// What a `storage_*` call returned: `done` 1, or 0 with the error, which
@@ -412,6 +423,12 @@ pub(crate) fn websocket_close(id: u32, code: u16, reason: &str) -> bool {
 pub(crate) fn websocket_buffered(id: u32) -> usize {
     // SAFETY: no pointers.
     unsafe { js_websocket_buffered(id) as usize }
+}
+
+/// Holds (`true`) or delivers again (`false`) the browser socket's events.
+pub(crate) fn websocket_pause(id: u32, paused: bool) {
+    // SAFETY: no pointers.
+    unsafe { js_websocket_pause(id, paused as u32) }
 }
 
 /// Removes callbacks before closing a discarded browser socket.

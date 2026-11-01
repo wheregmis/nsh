@@ -1,5 +1,5 @@
 //! A UI set of the tests' own (`test/ui`): small components that exercise
-//! the machinery of Rust components (slots, children placed one by one,
+//! the machinery of Rust components (slots and how their content lays out, children placed one by one,
 //! virtualized `items`, `#[prop(lazy)]` children, `#[methods]` refs, events,
 //! inputs) as an app's crate would, with no UI set of nsh's.
 
@@ -17,6 +17,8 @@ pub(crate) fn registry() -> Registry {
     registry
         .register::<Button>()
         .register::<Card>()
+        .register::<Disclosure>()
+        .register::<Field>()
         .register::<Group>()
         .register::<ListView>()
         .register::<Stepper>()
@@ -148,6 +150,64 @@ pub(crate) fn Card(props: CardProps) -> impl IntoElement {
                 .footer
                 .place(|footer| footer.flex_row().justify_end().px_4().py_3()),
         )
+}
+
+// --- Disclosure: a slot the view makes a button ------------------------------
+
+/// A trigger the app passes, made a disclosure button.
+#[derive(Debug, Clone, PartialEq, Props)]
+pub(crate) struct DisclosureProps {
+    /// No presses.
+    #[prop(default)]
+    pub(crate) disabled: Prop<bool>,
+    /// What the user presses.
+    pub(crate) trigger: Prop<Option<Slot>>,
+}
+
+/// A trigger the view gives a role, the keyboard focus, `disabled`, an
+/// expanded state and presses that flip it ([`DisclosureProps`]), as a
+/// popup's trigger: they are the app's element's own, so its state classes
+/// follow them.
+#[component]
+pub(crate) fn Disclosure(props: DisclosureProps) -> impl IntoElement {
+    let open = signal(false);
+    view().child(props.trigger.place(move |trigger| {
+        trigger
+            .role(AccessibilityRole::Button)
+            .focusable(true)
+            .disabled(props.disabled)
+            .accessibility_state(move || AccessibilityState {
+                expanded: Some(open.get()),
+                ..AccessibilityState::default()
+            })
+            .on_press(move |_: &()| open.update(|o| *o = !*o))
+    }))
+}
+
+// --- Field: a slot placed as it is, in a row -------------------------------
+
+/// A label the app passes before a control of fixed size, in a row.
+#[derive(Debug, Clone, PartialEq, Props)]
+pub(crate) struct FieldProps {
+    /// Before the control.
+    pub(crate) label: Prop<Option<Slot>>,
+    /// After the control, in a padded box of the view's.
+    pub(crate) hint: Prop<Option<Slot>>,
+}
+
+/// A row 300 × 40 ([`FieldProps`]): the label placed as it is, then a
+/// 50 × 20 control, then the hint in a padded box. The app's element in
+/// the label's slot lays out as an item of the row.
+#[component]
+pub(crate) fn Field(props: FieldProps) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .w(px(300.0))
+        .h(px(40.0))
+        .child(props.label.place(|label| label))
+        .child(view().w(px(50.0)).h(px(20.0)))
+        .child(props.hint.place(|hint| hint.px_2()))
 }
 
 // --- Group: children placed one by one --------------------------------------

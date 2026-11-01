@@ -93,7 +93,7 @@ mount(App);
 
 ### 带前进后退的浏览器
 
-Web 视图的 ref（Rust 中用 `.element_ref(&web)` 挂上的 `element_ref()`，TSX 中的 `ref`）提供 `reload`、`go_back` / `goBack`、`go_forward` / `goForward`、`stop_loading` / `stopLoading`、`inject_java_script` / `injectJavaScript(script)` 和 `post_message` / `postMessage(data)`：
+Web 视图的 ref（Rust 中用 `.element_ref(&web)` 挂上的 `element_ref()`，TSX 中的 `ref`）提供 `reload`、`go_back` / `goBack`、`go_forward` / `goForward`、`stop_loading` / `stopLoading`、`inject_java_script` / `injectJavaScript(script)`、`post_message` / `postMessage(data)` 和 `send_input` / `sendInput(input)`（见[下文](#像用户一样输入)）：
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -143,10 +143,10 @@ pub fn browser() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, Text, View, WebView, type WebViewNavigation, type YNode } from "nsh";
+import { mount, signal, Text, View, WebView, type WebViewNavigation, type WebViewRef } from "nsh";
 
 function Browser() {
-  let web!: YNode;
+  let web!: WebViewRef;
   const nav = signal<WebViewNavigation | null>(null);
   const button = (label: string, enabled: boolean, action: () => void) => (
     <Text onPress={enabled ? action : undefined} style={{ padding: 12, color: enabled ? "#0969da" : "#8c959f" }}>
@@ -155,7 +155,7 @@ function Browser() {
   );
   return (
     <View style={{ flex: 1, paddingTop: 50 }}>
-      <Text numberOfLines={1} style={{ paddingHorizontal: 12, color: "#57606a" }}>
+      <Text style={{ numberOfLines: 1, paddingHorizontal: 12, color: "#57606a" }}>
         {nav()?.loading ? "Loading…" : nav()?.title ?? ""}
       </Text>
       <WebView
@@ -226,7 +226,7 @@ pub fn App() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, Text, View, WebView, type YNode } from "nsh";
+import { mount, signal, Text, View, WebView, type WebViewRef } from "nsh";
 
 const page = `<!doctype html>
 <html><head><meta name="viewport" content="width=device-width"></head>
@@ -243,7 +243,7 @@ const page = `<!doctype html>
 </body></html>`;
 
 function App() {
-  let web!: YNode;
+  let web!: WebViewRef;
   const last = signal("");
   return (
     <View style={{ flex: 1, paddingTop: 50, gap: 12 }}>
@@ -282,6 +282,42 @@ web_view("https://example.com")
 />
 ```
 
+### 像用户一样输入
+
+`injectJavaScript` 只能产生合成事件，页面会把它们视为不可信（`event.isTrusted` 为 `false`），有些控件会忽略它们。ref 的 `send_input`（`sendInput(input)`）以用户亲手操作的方式把输入交给页面，因此页面收到的事件是可信的：
+
+- `{ type: "click", x, y }` 点击视口中的一个点，单位为 CSS 像素（即 `getBoundingClientRect()` 报告的值）。
+- `{ type: "text", text }` 把文本逐键输入到页面中当前有焦点的元素：每个字符用 US 布局上对应的键，换行按 Enter，US 键盘打不出的字符（`é`、中日韩文字、emoji）不对应任何键（`code` 为 `"Unidentified"`）。
+- `{ type: "key", key }` 按下 `Enter`、`Tab`、`Escape` 或 `Backspace`。
+
+```rust tabs
+use nsh_core::{WebInput, WebKey, prelude::*};
+use std::time::Duration;
+
+fn search(web: &ElementRef) {
+    web.send_input(WebInput::Click { x: px(120.0), y: px(40.0) });
+    let web = *web;
+    set_timeout(Duration::from_millis(50), move || {
+        web.send_input(WebInput::Text("espresso".into()));
+        web.send_input(WebInput::Key(WebKey::Enter));
+    });
+}
+```
+
+```tsx tabs
+web.sendInput({ type: "click", x: 120, y: 40 });
+setTimeout(() => {
+  web.sendInput({ type: "text", text: "espresso" });
+  web.sendInput({ type: "key", key: "Enter" });
+}, 50);
+```
+
+在 Rust 中它们是 `WebInput::Click { x, y }`、`WebInput::Text(text)` 和 `WebInput::Key(WebKey::Enter)`。
+
+可信输入带有用户激活（它可以打开窗口、写入剪贴板、打开系统的文件面板，或按下页面的确认按钮），所以它是一项单独的能力：应用需要在 `nsh.json` 的 `capabilities` 中声明 `"webview": { "input": true }`（见 [`webview`](./sandbox-and-capabilities.md#webview)），没有声明任何能力的应用也一样，否则核心会丢弃这次调用。
+
+和点击一样，`sendInput` 会把键盘焦点交给网页视图，应用自己的 `Input` 随之失去焦点。页面按自己的节奏处理输入：点击的事件在下一次调用开始时可能仍在途中，所以点击后先等它生效（大约一帧）再输入。目前由 macOS 投递这些输入，其他平台暂时忽略。
+
 ### 网页视图可以显示哪些网站
 
 如果 `nsh.json` 声明了 `"capabilities"`，网页视图只能显示并导航到 `webview` 下列出的主机：
@@ -316,7 +352,7 @@ pub fn player() -> impl IntoElement {
                 .element_ref(&player)
                 .paused(paused)
                 .repeat(true)
-                .resize_mode(ResizeMode::Contain)
+                .object_fit(ResizeMode::Contain)
                 .h(px(220.0))
                 .rounded(px(12.0))
                 .overflow_hidden()
@@ -344,10 +380,10 @@ pub fn player() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, Text, Video, View, type YNode } from "nsh";
+import { mount, signal, Text, Video, type VideoRef, View } from "nsh";
 
 function Player() {
-  let video!: YNode;
+  let video!: VideoRef;
   const paused = signal(true);
   const time = signal("");
   return (
@@ -357,7 +393,6 @@ function Player() {
         src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"
         paused={paused()}
         repeat
-        resizeMode="contain"
         style={{ height: 220, borderRadius: 12, overflow: "hidden", backgroundColor: "#000000" }}
         onProgress={(e) => time.set(`${e.currentTime.toFixed(1)} / ${e.duration.toFixed(1)} s`)}
         onEnd={() => paused.set(true)}
@@ -380,7 +415,7 @@ mount(Player);
 
 播放由属性控制：用 signal 设置 `paused`、`muted`、`volume` 和 `rate`，播放器随之变化。ref 提供 `seek(seconds)`。
 
-在 Rust 中，`video(url)` 创建播放器（URL 可以是值、signal 或闭包），每个属性是一个蛇形命名的构建方法（`paused`、`repeat(true)`、`resize_mode(ResizeMode::Contain)`，`progressUpdateInterval` 对应 `progress_interval`）；`on_load` 收到 `VideoInfo`（`duration`、`size`），`on_progress` 收到 `VideoProgress`（`current_time`、`duration`），`on_buffer` 收到 `bool`。
+在 Rust 中，`video(url)` 创建播放器（URL 可以是值、signal 或闭包），每个属性是一个蛇形命名的构建方法（`paused`、`repeat(true)`、`object_fit(ResizeMode::Contain)`，`progressUpdateInterval` 对应 `progress_interval`）；`on_load` 收到 `VideoInfo`（`duration`、`size`），`on_progress` 收到 `VideoProgress`（`current_time`、`duration`），`on_buffer` 收到 `bool`。
 
 | 属性 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -390,7 +425,7 @@ mount(Player);
 | `volume` | `number` | `1` | 0..1。 |
 | `rate` | `number` | `1` | 播放速度。 |
 | `repeat` | `boolean` | `false` | 播放到结尾后从头再播。 |
-| `resizeMode` | `"cover" \| "contain" \| "stretch" \| "center"` | | 画面如何适应视图。 |
+| `objectFit`（样式）、`object-*` 类 | `"cover" \| "contain" \| "fill" \| "none" \| "scale-down"` | `"contain"` | 画面如何适应视图，与 CSS 的 `object-fit` 相同（`class="object-cover"`）。 |
 | `controls` | `boolean` | `false` | 显示平台的播放控件。 |
 | `progressUpdateInterval` | `number` | `250` | 两次 `onProgress` 之间的毫秒数。 |
 

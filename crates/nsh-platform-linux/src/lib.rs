@@ -26,15 +26,18 @@ mod decor;
 #[cfg(feature = "dev")]
 pub mod dev;
 mod file_drop;
+mod file_requests;
 mod fps;
 mod image;
 mod input;
 mod keymap;
+mod menu_style;
 mod mount;
 mod native;
 mod navigation;
 mod scroll;
 mod selectable_view;
+mod shader;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;

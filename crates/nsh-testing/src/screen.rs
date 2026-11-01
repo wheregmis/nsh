@@ -13,9 +13,9 @@ use std::{
 };
 
 use nsh_core::{
-    AccessibilityRole, Bounds, Command, Dialog, EventKind, EventMask, GestureValues, InputConfig,
-    MountBatch, MountItem, NodeId, PanActivation, Point, PointerEvents, Points, Size, ViewKind,
-    element::PropEnum,
+    AccessibilityRole, AccessibilityState, Bounds, Command, Dialog, EventKind, EventMask,
+    GestureValues, InputConfig, MountBatch, MountItem, NodeId, PanActivation, Point, PointerEvents,
+    Points, Size, ViewKind, element::PropEnum,
 };
 
 use crate::selector::{Matcher, Selector, TextMatch};
@@ -70,16 +70,6 @@ fn utf16_slice(text: &str, start: u32, end: u32) -> String {
             here >= start && at <= end
         })
         .collect()
-}
-
-/// Why a [`Pick::Disabled`] match takes no step on `what` (the kind of
-/// view the step looks for).
-pub(crate) fn disabled(what: &str) -> &'static str {
-    if what == "scroll view" {
-        "does not scroll: the user cannot scroll it (`scrollable` is false)"
-    } else {
-        "is disabled"
-    }
 }
 
 /// What a back does ([`Screen::back_target`]).
@@ -141,6 +131,13 @@ pub struct Screen {
     opened_urls: Vec<String>,
     /// The `openUrl` requests to answer.
     url_opens: Vec<u32>,
+    /// The screen colors asked for (`pick_screen_color`), to answer.
+    screen_colors: Vec<u32>,
+    /// The requests on local paths that reached the platform
+    /// (`pick_paths`, `open_path`, ...), in order.
+    file_requests: Vec<nsh_core::file_dialog::FileRequest>,
+    /// Those to answer.
+    file_answers: Vec<(u32, nsh_core::file_dialog::FileRequest)>,
     /// What the app asked that only a real platform answers, since the
     /// last call.
     unsupported: Vec<&'static str>,
@@ -188,11 +185,16 @@ struct View {
     role: AccessibilityRole,
     /// It takes no presses (`disabled`, its accessibility state).
     disabled: bool,
-    /// `focusable`: `Some(false)` keeps a pressable out of Tab's stops.
+    /// `focusable`: `Some(true)` makes it a stop of Tab, `Some(false)` keeps
+    /// a pressable out ([`nsh_core::ViewProps::focus_stop`]).
     focusable: Option<bool>,
     /// It is selected (`selected`, its accessibility state; a canvas node's
     /// `selected`).
     selected: bool,
+    /// Its `accessibilityState`.
+    accessibility_state: AccessibilityState,
+    /// Its `accessibilityLevel`.
+    level: Option<u32>,
     /// How long a press must last to be a long one (`delayLongPress`), in
     /// milliseconds.
     long_press_delay: Option<f32>,
@@ -200,9 +202,9 @@ struct View {
     /// one selection.
     selectable_view: bool,
     /// The interaction states it tracks (`TrackStates`: pressed, hovered).
-    tracked: u8,
+    tracked: u16,
     /// The interaction states it is in (of those it tracks).
-    states: u8,
+    states: u16,
     /// The values its drags, pinches and rotations drive natively.
     gestures: GestureValues,
     /// When a drag on it activates its JS responder (`panActivation`).
@@ -386,6 +388,8 @@ impl Screen {
                 view.disabled = props.accessibility.state.disabled;
                 view.focusable = props.focusable;
                 view.selected = props.accessibility.state.selected;
+                view.accessibility_state = props.accessibility.state;
+                view.level = props.accessibility.level;
                 view.long_press_delay = props.long_press_delay;
                 view.selectable_view = props.selectable_view;
                 view.pan_activation = props.pan_activation;
@@ -521,6 +525,13 @@ impl Screen {
             Command::OpenUrl { id, url } => {
                 self.opened_urls.push(url.clone());
                 self.url_opens.push(*id);
+            }
+            Command::PickScreenColor { id } => self.screen_colors.push(*id),
+            // Recorded, never carried out: a test's machine opens, shows
+            // and trashes nothing.
+            Command::FileRequest { id, request } => {
+                self.file_requests.push((**request).clone());
+                self.file_answers.push((*id, (**request).clone()));
             }
             Command::Back => self.back_asked = true,
             Command::Desktop(desktop) => {
@@ -688,7 +699,7 @@ impl Screen {
         let (id, start) = match hits.as_slice() {
             [(id, Some(start))] => (*id, *start),
             [(_, None)] => return Err(format!("span `{selector}` has no characters")),
-            [] => return Err(format!("no span matches `{selector}`")),
+            [] => return Err(crate::failure::not_found("span", selector)),
             many => {
                 return Err(format!(
                     "`{selector}` matches {} spans; add `nth=<n>` or name the text views to look in",
@@ -701,7 +712,7 @@ impl Screen {
             .and_then(|v| v.attributed.as_ref())
             .and_then(|text| text.span_at(start))
             .map(|span| span.style)
-            .ok_or_else(|| format!("no span matches `{selector}`"))
+            .ok_or_else(|| crate::failure::not_found("span", selector))
     }
 
     fn detach(&mut self, id: NodeId) {
@@ -984,6 +995,24 @@ impl Screen {
         &self.opened_urls
     }
 
+    /// The requests on local paths that reached the platform, in order
+    /// (`pick_paths`, `pick_save_path`, `open_path`, `reveal_path`,
+    /// `move_to_trash`; only once the environment has
+    /// [`nsh_core::platform::Environment::file_requests`]).
+    pub fn file_requests(&self) -> &[nsh_core::file_dialog::FileRequest] {
+        &self.file_requests
+    }
+
+    /// The requests on local paths to answer since the last call.
+    pub(crate) fn take_file_answers(&mut self) -> Vec<(u32, nsh_core::file_dialog::FileRequest)> {
+        std::mem::take(&mut self.file_answers)
+    }
+
+    /// The screen color requests to answer since the last call.
+    pub(crate) fn take_screen_colors(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.screen_colors)
+    }
+
     /// The `openUrl` requests to answer since the last call.
     pub(crate) fn take_url_opens(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.url_opens)
@@ -1131,7 +1160,7 @@ impl Screen {
                 Ok(!self.disabled_from(id, None)
                     && self.input(id).is_none_or(|i| i.config.editable))
             }
-            [] => Err(format!("no view matches `{selector}`")),
+            [] => Err(crate::failure::not_found("view", selector)),
             ref all => Err(format!("`{selector}` matches {} views", all.len())),
         }
     }
@@ -1154,7 +1183,7 @@ impl Screen {
                     None => return Ok(false),
                 }
             },
-            [] => Err(format!("no view matches `{selector}`")),
+            [] => Err(crate::failure::not_found("view", selector)),
             ref all => Err(format!("`{selector}` matches {} views", all.len())),
         }
     }
@@ -1166,7 +1195,35 @@ impl Screen {
         let parsed = Selector::parse(selector)?;
         match self.resolve(&parsed)[..] {
             [id] => Ok(self.nodes.get(&id).is_some_and(|v| v.selected)),
-            [] => Err(format!("no view matches `{selector}`")),
+            [] => Err(crate::failure::not_found("view", selector)),
+            ref all => Err(format!("`{selector}` matches {} views", all.len())),
+        }
+    }
+
+    /// The accessibility state of the view `selector` names (its
+    /// `accessibilityState`: a toggle button's `pressed`, a page's
+    /// `current`, ...); an error when none or several match.
+    pub fn accessibility_state(&self, selector: &str) -> Result<AccessibilityState, String> {
+        let parsed = Selector::parse(selector)?;
+        match self.resolve(&parsed)[..] {
+            [id] => Ok(self
+                .nodes
+                .get(&id)
+                .map(|v| v.accessibility_state)
+                .unwrap_or_default()),
+            [] => Err(crate::failure::not_found("view", selector)),
+            ref all => Err(format!("`{selector}` matches {} views", all.len())),
+        }
+    }
+
+    /// The level of the view `selector` names (its `accessibilityLevel`:
+    /// a heading's, a tree item's depth); an error when none or several
+    /// match.
+    pub fn accessibility_level(&self, selector: &str) -> Result<Option<u32>, String> {
+        let parsed = Selector::parse(selector)?;
+        match self.resolve(&parsed)[..] {
+            [id] => Ok(self.nodes.get(&id).and_then(|v| v.level)),
+            [] => Err(crate::failure::not_found("view", selector)),
             ref all => Err(format!("`{selector}` matches {} views", all.len())),
         }
     }
@@ -1574,7 +1631,7 @@ impl Screen {
     /// View `id`'s interaction states with `bit` set (or cleared), when it
     /// tracks it and they change.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn set_state(&mut self, id: NodeId, bit: u8, on: bool) -> Option<u8> {
+    pub(crate) fn set_state(&mut self, id: NodeId, bit: u16, on: bool) -> Option<u16> {
         let view = self.nodes.get_mut(&id)?;
         let next = nsh_core::input::next_states(view.tracked, view.states, bit, on)?;
         view.states = next;
@@ -1689,7 +1746,8 @@ impl Screen {
         self.focused = id;
     }
 
-    /// The pressable with the keyboard focus, while it is mounted.
+    /// The view (not an input) with the keyboard focus, while it is
+    /// mounted: a pressable or a `focusable` view Tab moved it to.
     pub(crate) fn key_focus(&self) -> Option<NodeId> {
         self.key_focus.filter(|id| self.nodes.contains_key(id))
     }
@@ -1699,8 +1757,9 @@ impl Screen {
     }
 
     /// Tab's stops, in tree order, as macOS and the web have them: the
-    /// inputs that edit and the views that take presses, shown, enabled
-    /// and not `focusable={false}`.
+    /// inputs that edit and the views [`nsh_core::ViewProps::focus_stop`]
+    /// takes (those that take presses unless `focusable={false}`, and
+    /// `focusable={true}` ones whether or not they do), shown and enabled.
     pub(crate) fn tab_stops(&self) -> Vec<NodeId> {
         self.shown()
             .into_iter()
@@ -1711,9 +1770,13 @@ impl Screen {
                 if let Some(input) = &v.input {
                     return input.config.editable && !self.disabled_from(id, None);
                 }
+                // Disabled is the ancestors' too here (`disabled_from`).
+                let props = nsh_core::ViewProps {
+                    focusable: v.focusable,
+                    ..Default::default()
+                };
                 v.span.is_none()
-                    && v.events.contains(EventKind::Press)
-                    && v.focusable != Some(false)
+                    && props.focus_stop(v.events.contains(EventKind::Press))
                     && !self.disabled_from(id, None)
             })
             .collect()

@@ -4,15 +4,19 @@
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
 import BaseDock from "./base-dock";
+import ModAccessDenied from "./mod-access-denied";
 import DesktopProps from "./desktop-props";
 import ModStandardSystem from "./mod-standard-system";
 import ModStandardFiles from "./mod-standard-files";
+import WebSendInput from "./web-send-input";
 
 const cases: Record<string, () => JSX.Element> = {
   "base-dock": BaseDock,
   "desktop-props": DesktopProps,
   "mod-standard-system": ModStandardSystem,
   "mod-standard-files": ModStandardFiles,
+  "mod-access-denied": ModAccessDenied,
+  "web-send-input": WebSendInput,
 };
 const shown = signal("");
 

@@ -163,6 +163,10 @@ The environment is a desktop's: the safe area and the keyboard height are 0, `id
 follows Settings > Personalization > Colors live, `fontScale()` the Text size setting, reduce motion the animation
 effects setting and the locale the user's regional format. See [Device and environment](./device-and-environment.md).
 
+The `cursor` style follows updates while the mouse rests over a view. When a batch changes the cursor,
+Windows applies the new shape or `"none"` after the whole batch, using the view under the pointer.
+The title bar and resize borders keep their system cursors.
+
 ### Keyboard
 
 | Keys | Do |
@@ -173,7 +177,7 @@ effects setting and the locale the user's regional format. See [Device and envir
 | Escape | Leaves the focused field; else clears a text selection, then closes the newest dialog or goes back |
 | Alt+Left, Browser Back key, mouse back button | Go back (also from a field) |
 | Ctrl+arrows, Home / End, Ctrl+Home / End, with Shift; Ctrl+Backspace / Delete | Move, select and delete by word and line in a field, as in every Windows app |
-| Ctrl+Z, Ctrl+Y, Ctrl+X / C / V / A; Shift+Delete, Ctrl+Insert, Shift+Insert | Undo, redo, cut, copy, paste, select all (a `masked` field refuses cut and copy); Ctrl+A / Ctrl+C select and copy `selectable` text |
+| Ctrl+Z, Ctrl+Y, Ctrl+X / C / V / A; Shift+Delete, Ctrl+Insert, Shift+Insert | Undo, redo, cut, copy, paste, select all (a `masked` field refuses cut and copy); Ctrl+A / Ctrl+C select and copy selectable text |
 | Arrows; Page Up / Down, Space, Shift+Space; Home / End, Ctrl+Home / End | Scroll the scroll view around the focused view or under the mouse by a line, a page, to the start / end (not while a field has the focus) |
 | F11, Alt+F4 | Full screen, close the window (`nsh package` and `nsh run` apps) |
 | Ctrl+R, F5 | Reload the latest build (`nsh run`) |

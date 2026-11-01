@@ -9,9 +9,10 @@
 //!
 //! What a view looks like is mostly Core Animation: its layer's background,
 //! corners, border and shadow, and sublayers for the rest
-//! ([`crate::decor`]). Text and canvas drawings are drawn into the layer by
-//! `drawRect:` (CoreText / Core Graphics); other views use `updateLayer`
-//! and get no backing store.
+//! ([`crate::decor`]). Every view uses `updateLayer` and gets no backing
+//! store; text and canvas drawings (CoreText / Core Graphics) go into a
+//! content sublayer whose delegate draws them (`drawLayer:inContext:`,
+//! [`NshView::redraw`]).
 //!
 //! Children are subviews of the view, or of its container when it has one:
 //! scroll views always do, and a view that clips its children and casts a
@@ -43,7 +44,7 @@ use objc2_app_kit::{
     NSTrackingArea, NSTrackingAreaOptions, NSView, NSViewLayerContentsRedrawPolicy,
     NSWindowOrderingMode,
 };
-use objc2_core_foundation::{CGFloat, CGPoint, CGRect, CGSize};
+use objc2_core_foundation::{CGAffineTransform, CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGContext;
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect};
 use objc2_quartz_core::{CALayer, CALayerDelegate, CATransform3D};
@@ -115,9 +116,9 @@ pub(crate) struct ViewState {
     /// Touch, accessibility and test properties.
     pub(crate) props: Box<ViewProps>,
     /// States to report (`TrackStates`), and the current ones.
-    pub(crate) tracked: u8,
+    pub(crate) tracked: u16,
     /// Current interaction states (pressed, hovered, focused).
-    pub(crate) states: u8,
+    pub(crate) states: u16,
     /// Extra translation (sticky list cells, screen transitions).
     pub(crate) shift: (f32, f32),
     /// Extra opacity (screen and modal transitions).
@@ -130,6 +131,8 @@ pub(crate) struct ViewState {
     pub(crate) image: Option<crate::image::ImageState>,
     /// Canvas content.
     pub(crate) canvas: Option<crate::canvas::CanvasState>,
+    /// What a shader draws under the children ([`crate::shader`]).
+    pub(crate) shader: Option<crate::shader::ShaderState>,
     /// Text field (input views).
     pub(crate) input: Option<std::rc::Rc<crate::text_input::InputState>>,
     /// Hosted AppKit views.
@@ -163,6 +166,7 @@ impl ViewState {
             text: None,
             image: None,
             canvas: None,
+            shader: None,
             input: None,
             natives: Vec::new(),
             overflow: None,
@@ -188,16 +192,6 @@ impl ViewState {
         self.anim.opacity.unwrap_or(self.style.opacity) * self.fade * live * filters
     }
 
-    /// Its shadow, with animated color, opacity and radius.
-    pub(crate) fn shadow(&self) -> nsh_core::Shadow {
-        let mut s = self.style.shadow;
-        let a = &self.anim;
-        s.color = a.shadow_color.unwrap_or(s.color);
-        s.opacity = a.shadow_opacity.unwrap_or(s.opacity);
-        s.radius = a.shadow_radius.unwrap_or(s.radius);
-        s
-    }
-
     /// Its borders, with an animated color.
     pub(crate) fn borders(&self) -> nsh_core::Borders {
         let mut b = self.style.borders;
@@ -221,7 +215,7 @@ impl ViewState {
             )
     }
 
-    /// True if it draws content with `drawRect:` (text, canvas).
+    /// True if it draws content into its content layer (text, canvas).
     pub(crate) fn draws(&self) -> bool {
         self.text.is_some() || self.canvas.is_some()
     }
@@ -356,10 +350,21 @@ define_class!(
             };
             let c = Some(cx);
             CGContext::save_g_state(c);
+            // The layer's space, in points, is the context's base space:
+            // y down where its contents are flipped.
+            let mut base = CGAffineTransform {
+                a: 1.0,
+                b: 0.0,
+                c: 0.0,
+                d: 1.0,
+                tx: 0.0,
+                ty: 0.0,
+            };
             if !layer.contentsAreFlipped() {
                 // Drawing is top down, as in a flipped view.
                 CGContext::translate_ctm(c, 0.0, layer.bounds().size.height);
                 CGContext::scale_ctm(c, 1.0, -1.0);
+                base.d = -1.0;
             }
             crate::text::draw(cx, &state);
             // What Core Animation redraws (all of it, or a canvas's part
@@ -369,10 +374,10 @@ define_class!(
             let asynchronous = layer.drawsAsynchronously();
             if crate::fps::measuring() && state.canvas.is_some() {
                 let start = std::time::Instant::now();
-                crate::canvas::draw(cx, &state, dirty, size, scale, asynchronous);
+                crate::canvas::draw(cx, &state, dirty, size, scale, asynchronous, base);
                 crate::fps::drew_canvas(start.elapsed());
             } else {
-                crate::canvas::draw(cx, &state, dirty, size, scale, asynchronous);
+                crate::canvas::draw(cx, &state, dirty, size, scale, asynchronous, base);
             }
             CGContext::restore_g_state(c);
             // Where the next paint happens (`canvas.rs`): Core Animation's
@@ -533,7 +538,7 @@ define_class!(
             // A click outside a field that edits leaves the focus in it, as
             // desktop apps do (`blur()` and Escape still hand it over).
             let view = NshView(self.retain());
-            (view.id() == ROOT_ID || crate::input::is_key_control(&view))
+            (view.id() == ROOT_ID || crate::input::is_key_stop(&view))
                 && self.keyboard_surface().is_some_and(|s| {
                     !(crate::text_input::editing(&s) && clicking(self.mtm()))
                 })
@@ -546,7 +551,7 @@ define_class!(
             if accepted && let Some(surface) = self.keyboard_surface() {
                 let view = NshView(self.retain());
                 crate::input::set_state(&surface, &view, nsh_core::tailwind::state::FOCUSED, true);
-                // Pressables reached by Tab report it, as inputs do.
+                // The stops Tab reaches report it, as inputs do.
                 if view.id() != ROOT_ID {
                     surface.event(view.id(), nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
                 }
@@ -561,7 +566,7 @@ define_class!(
             if accepted && let Some(surface) = self.keyboard_surface() {
                 let view = NshView(self.retain());
                 crate::input::set_state(&surface, &view, nsh_core::tailwind::state::FOCUSED, false);
-                // Pressables reached by Tab report it, as inputs do.
+                // The stops Tab reaches report it, as inputs do.
                 if view.id() != ROOT_ID {
                     surface.event(view.id(), nsh_core::EventKind::Blur, nsh_core::EventPayload::None);
                 }
@@ -768,7 +773,7 @@ define_class!(
 );
 
 impl ViewObj {
-    // Only the root stores a surface. A focused pressable child uses its
+    // Only the root stores a surface. A focused child (a Tab stop) uses its
     // ancestors for keyboard handling; drawing and pointer hooks stay root-only.
     fn keyboard_surface(&self) -> Option<std::rc::Rc<Surface>> {
         if let Some(surface) = self.surface() {

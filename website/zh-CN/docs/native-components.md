@@ -75,7 +75,7 @@ pub fn App() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, Text, type YNode, View } from "nsh";
+import { mount, type NativeComponentRef, signal, Text, View } from "nsh";
 import { nativeComponent } from "nsh";
 
 /** The host app's badge: a label it draws, sized to its text. */
@@ -88,7 +88,7 @@ const colors = ["#8250df", "#0969da", "#1a7f37", "#cf222e"];
 
 function App() {
   const taps = signal(0);
-  let badge: YNode | undefined;
+  let badge: NativeComponentRef | undefined;
   return (
     <View style={{ flex: 1, padding: 20, paddingTop: "calc(env(safe-area-inset-top) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)", gap: 16, backgroundColor: "#f6f8fa" }}>
       <Text style={{ fontSize: 22, fontWeight: "700" }}>Rendered by nsh</Text>
@@ -118,7 +118,7 @@ TSX 版本就是 `examples/embedded/App.tsx`，仓库里的两个嵌入示例运
 function nativeComponent<P extends object = {}, E extends object = {}>(
   name: string,
   spec: NativeComponentSpec<P, E>,
-): (props: NativeComponentProps<P, E>) => YNode;
+): (props: NativeComponentProps<P, E>) => JSX.Element;
 ```
 
 | 参数 | 类型 | 说明 |
@@ -226,7 +226,7 @@ map.command("zoomTo", json!({ "level": 3 }));
 ```
 
 ```tsx tabs
-let map: YNode | undefined;
+let map: NativeComponentRef | undefined;
 
 <MapView ref={(node) => (map = node)} latitude={52.52} longitude={13.405} style={{ flex: 1 }} />;
 
@@ -582,6 +582,31 @@ fn register(app: &AppView) {
 自己接收输入，并位于 NSH 绘制的所有内容之上（绘制在它上方的 NSH 内容会被遮住，和 Web 视图一样）。`ComponentContext::emit`、
 `set_size`（单位为点）和 `redraw` 可以在任意线程调用。请在 `AppView::load` 之前注册；注册表属于一个 `AppView`（以及用同一个
 `AppOptions` 创建的视图）。
+
+组件还可以通过 `wheel` 接收落在它上面的鼠标滚轮和触控板滚动（比如图片查看器用它来缩放）。它收到的 `Wheel` 包含指针位置
+（`x`、`y`，组件自身坐标，单位为点）、以点为单位的距离（`dx`、`dy`，向右、向下为正，和滚动视图移动内容的方向一致）、以滚轮刻度
+为单位的距离（`notches_x`、`notches_y`，精确触控板和高分辨率滚轮会给出小数）、是否为细粒度滚动（`precise`），以及按下的修饰键
+（`shift`、`ctrl`、`alt`）。接收了这次滚动就返回 `true`；其余的滚动交给外层的滚动视图，默认全部交给它们。滚动视图已经开始的
+一次滚动会一直留在那个视图上。Ctrl + 滚轮也是精确触控板的捏合手势，Shift + 滚轮按滚轮原本发送的方向到达（`dy`，`shift` 为真）：
+
+```rust
+use nsh_platform_windows::Wheel;
+
+impl NativeComponent for ImageView {
+    // draw、set_prop……
+
+    fn wheel(&mut self, event: &Wheel) -> bool {
+        if !event.ctrl {
+            return false; // 交给外层的滚动视图
+        }
+        // 每个刻度缩放 √2 倍，以指针为中心。
+        let factor = 2f32.powf(-event.notches_y / 2.0);
+        self.zoom_about(event.x, event.y, factor);
+        self.context.redraw();
+        true
+    }
+}
+```
 
 ## 规则与限制
 

@@ -26,7 +26,26 @@ pub(crate) trait Driver: Send {
     fn clear(&mut self, selector: &str) -> Result<(), String>;
     fn scroll(&mut self, selector: &str, distance: Points) -> Result<(), String>;
     fn drag(&mut self, selector: &str, by: Point<Points>) -> Result<(), String>;
+    /// Drops local files (`file:` URLs) on what `selector` names.
+    fn drop_files(&mut self, selector: &str, uris: Vec<String>) -> Result<(), String> {
+        let _ = (selector, uris);
+        Err("`dropFiles` runs headless and on Linux for now".into())
+    }
+    /// Drags without lifting, until [`Driver::drop_held`].
+    fn drag_and_hold(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
+        let _ = (selector, by);
+        Err("`dragAndHold` runs headless and on Linux for now".into())
+    }
+    /// Lifts the finger `drag_and_hold` left down.
+    fn drop_held(&mut self) -> Result<(), String> {
+        Err("`drop` runs headless and on Linux for now".into())
+    }
     fn press_key(&mut self, keys: &str) -> Result<(), String>;
+    /// Holds (`down`) or lets go of modifier keys for the pointer's steps.
+    fn hold_keys(&mut self, keys: &str, down: bool) -> Result<(), String> {
+        let _ = (keys, down);
+        Err("holding keys (`keyboard.down` / `keyboard.up`) runs headless only for now: run the test without `--target`".into())
+    }
     fn hover(&mut self, selector: &str) -> Result<(), String>;
     fn right_click(&mut self, selector: &str) -> Result<(), String>;
     /// Pastes `content` into the input `selector` names, as the user's
@@ -39,6 +58,11 @@ pub(crate) trait Driver: Send {
     fn wait_for_within(&mut self, selector: &str, timeout: Duration) -> Result<(), String>;
     fn wait_for_gone(&mut self, selector: &str, timeout: Duration) -> Result<(), String>;
     fn next_change(&mut self, timeout: Duration) -> Result<(), String>;
+    /// What `waitUntil` waits for between looks on a manual clock: moves it
+    /// by a display frame (`timeout` at most) and applies what came; how
+    /// far it moved (zero on the system's clock, where it is
+    /// [`Driver::next_change`]).
+    fn next_frame(&mut self, timeout: Duration) -> Result<Duration, String>;
     fn set_viewport(&mut self, size: Size<Points>) -> Result<(), String>;
     fn set_color_scheme(&mut self, scheme: ColorScheme) -> Result<(), String>;
     fn run_for(&mut self, time: Duration) -> Result<(), String>;
@@ -111,6 +135,18 @@ impl Driver for Headless {
     fn drag(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
         Headless::drag(self, selector, by)
     }
+    fn hold_keys(&mut self, keys: &str, down: bool) -> Result<(), String> {
+        Headless::hold_keys(self, keys, down)
+    }
+    fn drag_and_hold(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
+        Headless::drag_and_hold(self, selector, by)
+    }
+    fn drop_files(&mut self, selector: &str, uris: Vec<String>) -> Result<(), String> {
+        Headless::drop_files(self, selector, uris)
+    }
+    fn drop_held(&mut self) -> Result<(), String> {
+        Headless::drop_held(self)
+    }
     fn press_key(&mut self, keys: &str) -> Result<(), String> {
         Headless::press_key(self, keys)
     }
@@ -143,6 +179,9 @@ impl Driver for Headless {
     }
     fn next_change(&mut self, timeout: Duration) -> Result<(), String> {
         Headless::next_change(self, timeout)
+    }
+    fn next_frame(&mut self, timeout: Duration) -> Result<Duration, String> {
+        Headless::next_frame(self, timeout)
     }
     fn set_viewport(&mut self, size: Size<Points>) -> Result<(), String> {
         Headless::set_viewport(self, size)
@@ -252,6 +291,9 @@ pub trait Host: Send {
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a host may take to move the app's clock and settle.
 const CLOCK_STEP_TIMEOUT: Duration = Duration::from_secs(90);
+/// A display frame, which a wait moves a manual clock by between two looks
+/// (the agent's frame).
+const FRAME: Duration = Duration::from_millis(16);
 
 /// An app on a real platform's host.
 pub(crate) struct Remote {
@@ -282,7 +324,9 @@ impl Remote {
             *self.step.lock().unwrap_or_else(|e| e.into_inner()) = name;
         }
         let timeout = match &step {
-            TestStep::Wait { ms } => STEP_TIMEOUT + Duration::from_millis(*ms),
+            TestStep::Wait { ms } | TestStep::WaitFor { timeout_ms: ms, .. } => {
+                STEP_TIMEOUT + Duration::from_millis(*ms)
+            }
             // The timers due on the way run meanwhile.
             TestStep::Clock { .. } => CLOCK_STEP_TIMEOUT,
             _ => STEP_TIMEOUT,
@@ -412,6 +456,28 @@ impl Driver for Remote {
     fn press_key(&mut self, keys: &str) -> Result<(), String> {
         self.action(TestStep::PressKey { keys: keys.into() })
     }
+    fn drag_and_hold(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
+        self.action(TestStep::DragAndHold {
+            selector: selector.into(),
+            x: by.x.0,
+            y: by.y.0,
+        })
+    }
+    fn drop_held(&mut self) -> Result<(), String> {
+        self.action(TestStep::Drop)
+    }
+    fn drop_files(&mut self, selector: &str, uris: Vec<String>) -> Result<(), String> {
+        self.action(TestStep::DropFiles {
+            selector: selector.into(),
+            uris,
+        })
+    }
+    fn hold_keys(&mut self, keys: &str, down: bool) -> Result<(), String> {
+        self.action(TestStep::HoldKeys {
+            keys: keys.into(),
+            down,
+        })
+    }
     fn hover(&mut self, selector: &str) -> Result<(), String> {
         self.action(TestStep::Hover {
             selector: selector.into(),
@@ -426,6 +492,7 @@ impl Driver for Remote {
         self.action(TestStep::Paste {
             selector: selector.into(),
             text: content.text.clone(),
+            html: content.html.clone(),
             files: content
                 .files
                 .iter()
@@ -473,6 +540,15 @@ impl Driver for Remote {
         self.action(TestStep::NextChange {
             timeout_ms: ms(timeout),
         })
+    }
+    fn next_frame(&mut self, timeout: Duration) -> Result<Duration, String> {
+        if !self.manual_clock {
+            return self.next_change(timeout).map(|()| Duration::ZERO);
+        }
+        // A whole millisecond at least: the wait's time runs out.
+        let by = ms(timeout.min(FRAME)).max(1);
+        self.action(TestStep::NextFrame { ms: by })?;
+        Ok(Duration::from_millis(by))
     }
     fn set_viewport(&mut self, size: Size<Points>) -> Result<(), String> {
         self.action(TestStep::SetViewport {
@@ -531,8 +607,26 @@ impl Driver for Remote {
             selector: selector.into(),
         })
     }
-    fn span_style(&mut self, _: &str) -> Result<ResolvedTextStyle, String> {
-        Err(headless_only("Reading a span's style (`app.spanStyle`)"))
+    fn span_style(&mut self, selector: &str) -> Result<ResolvedTextStyle, String> {
+        let span: nsh_dev::protocol::SpanStyle = self.query(TestStep::SpanStyle {
+            selector: selector.into(),
+        })?;
+        Ok(ResolvedTextStyle {
+            color: nsh_core::Color(span.color),
+            font_size: nsh_core::Points(span.font_size),
+            font_weight: span.font_weight,
+            italic: span.italic,
+            decoration: nsh_core::TextDecoration {
+                underline: span.underline,
+                line_through: span.line_through,
+            },
+            background: span.background.map(|color| nsh_core::TextBackground {
+                color: nsh_core::Color(color),
+                radius: nsh_core::Points::ZERO,
+                node: 0,
+            }),
+            ..ResolvedTextStyle::default()
+        })
     }
     fn dialogs(&mut self) -> Result<Vec<Dialog>, String> {
         self.query(TestStep::Dialogs)

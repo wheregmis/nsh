@@ -142,6 +142,9 @@ QuickJS 字节码是受信任的输入，只能从你自己应用的文件中加
 （Windows 11 上也是：Windows 沿用了这个版本号）。深色模式实时跟随“设置 > 个性化 > 颜色”，`fontScale()` 跟随“文本大小”设置，
 减少动态效果跟随“动画效果”设置，区域设置跟随用户的区域格式。见[设备与环境](./device-and-environment.md)。
 
+鼠标停在视图上时，`cursor` 样式也会跟随更新。批次改变光标后，Windows 会在整个批次应用完成时，
+根据指针下方的视图显示新形状或应用 `"none"`。标题栏和调整窗口大小的边框使用系统光标。
+
 ### 键盘
 
 | 按键 | 作用 |
@@ -152,7 +155,7 @@ QuickJS 字节码是受信任的输入，只能从你自己应用的文件中加
 | Escape | 离开有焦点的输入框；否则清除文本选区，再关闭最上层的对话框或返回上一页 |
 | Alt+Left、浏览器后退键、鼠标的后退键 | 返回上一页（在输入框中也是） |
 | Ctrl+方向键、Home / End、Ctrl+Home / End，加 Shift；Ctrl+Backspace / Delete | 在输入框中按词和行移动、选择、删除，与其他 Windows 应用一致 |
-| Ctrl+Z、Ctrl+Y、Ctrl+X / C / V / A；Shift+Delete、Ctrl+Insert、Shift+Insert | 撤销、重做、剪切、复制、粘贴、全选（`masked` 输入框拒绝剪切和复制）；Ctrl+A / Ctrl+C 选择并复制 `selectable` 文本 |
+| Ctrl+Z、Ctrl+Y、Ctrl+X / C / V / A；Shift+Delete、Ctrl+Insert、Shift+Insert | 撤销、重做、剪切、复制、粘贴、全选（`masked` 输入框拒绝剪切和复制）；Ctrl+A / Ctrl+C 选择并复制 可选择的文本 |
 | 方向键；Page Up / Down、Space、Shift+Space；Home / End、Ctrl+Home / End | 滚动有焦点的视图所在或鼠标下方的滚动视图：一行、一页、到开头 / 结尾（输入框有焦点时不滚动） |
 | F11、Alt+F4 | 全屏、关闭窗口（`nsh package` 和 `nsh run` 的应用） |
 | Ctrl+R、F5 | 重新加载最新的构建（`nsh run`） |
