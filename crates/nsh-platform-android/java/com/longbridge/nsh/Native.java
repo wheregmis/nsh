@@ -77,6 +77,7 @@ final class Native {
     static final int OPEN_URL = 66;
     static final int CARET_MOVE = 67;
     static final int PASTE = 68;
+    static final int DOWNLOAD = 69;
 
     /**
      * Draws the SVG {@code bytes} for a view {@code maxPx} pixels on its longer side, with its shorter side that long
